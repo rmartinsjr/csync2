@@ -114,5 +114,12 @@ cfgfile_scanner.c
 config.h
 csync2
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
 *.sublime-project
 *.sublime-workspace
