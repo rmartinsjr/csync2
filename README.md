@@ -297,7 +297,49 @@ Complementing this, the parallel updates feature, activated via the new `-P` com
 - Increased complexity in conflict resolution
 - Potential for database deadlocks if not carefully managed
 
-## 7. Debugging and Logging Enhancements
+## 7. Batch Delete Limit Protection
+
+### Overview
+
+Csync2 2.1.1 introduces configurable batch delete limits to prevent memory exhaustion during large synchronization operations. When using the `-b` flag for batch mode, the system previously had no limit on how many file deletions could be accumulated in memory before processing, potentially causing out-of-memory conditions when synchronizing directories with millions of files.
+
+### Key Features
+
+1. **Configurable Batch Size**: New `batch_delete_limit` configuration option (default: 20,000 files)
+   - Controls maximum number of file deletions held in memory
+   - Automatically flushes to database when limit is reached
+   - Memory usage approximately 130 bytes per file
+
+2. **Fallback Option**: `skip_batch_limit` for troubleshooting
+   - Disables limit checking for backward compatibility
+   - Reverts to pre-2.1.1 unlimited behavior
+   - Useful for debugging or special cases
+
+3. **Memory Safety**: Default limit of 20,000 files uses approximately 2.6MB of RAM
+   - Prevents unbounded memory growth
+   - Maintains performance while ensuring stability
+   - Configurable based on available system memory
+
+### Configuration Examples
+
+```bash
+# In csync2.cfg:
+batch_delete_limit 20000;  # Default: limit to 20,000 files
+batch_delete_limit 50000;  # For servers with more RAM
+batch_delete_limit 0;      # Unlimited (use with caution)
+skip_batch_limit;          # Disable limit checking entirely
+```
+
+### Debug Levels
+
+The batch delete limit feature includes comprehensive debug logging:
+- Level 1 (`-xvb`): Shows batch flush decisions and limit notifications
+- Level 2 (`-xvvb`): Includes SQL operations and batch processing details
+- Level 3 (`-xvvvb`): Shows individual file operations and counter updates
+
+This feature significantly improves csync2's robustness when handling large-scale file deletions, preventing potential system crashes due to memory exhaustion while maintaining backward compatibility through the fallback option.
+
+## 8. Debugging and Logging Enhancements
 
 ### Implementation Details:
 
@@ -377,7 +419,7 @@ void csync_vdebug(int lv, const char *fmt, va_list ap)
 - Potential for significant log file growth
 - Slight CPU overhead for extensive logging
 
-## 8. Build System and Compatibility Improvements
+## 9. Build System and Compatibility Improvements
 
 ### Autoconf/Automake Updates:
 - Modified `configure.ac` to check for newer compiler features
@@ -778,14 +820,105 @@ fi
    - Implement transaction-like behavior for batched operations.
    - Provide rollback capabilities in case of partial failures.
 
+### Batch Delete Limit Protection - Technical Implementation
+
+The batch delete limit feature addresses a critical memory exhaustion vulnerability where the `batched_dirty_deletes` list could grow without bounds during large synchronization operations.
+
+#### Core Implementation in `update.c`
+
+```c
+/* Global configuration variables */
+int csync_batch_delete_limit = 20000;  /* Default limit */
+int csync_skip_batch_limit = 0;        /* Fallback flag */
+
+/* Counter for O(1) limit checking */
+static int batched_deletes_count = 0;
+
+/* Flush function called when limit reached */
+static void flush_batched_deletes(const char *peername)
+{
+    struct textlist *dt;
+    int processed = 0;
+    
+    if (!batched_dirty_deletes || batched_deletes_count == 0 || !peername)
+        return;
+    
+    csync_debug(1, "Flushing batch: %d deletions for peer '%s'\n", 
+                batched_deletes_count, peername);
+    
+    /* Execute all deletions for THIS peer */
+    for (dt = batched_dirty_deletes; dt != 0; dt = dt->next) {
+        SQL("Batch delete",
+            "DELETE FROM dirty WHERE filename = '%s' "
+            "AND peername = '%s'", url_encode(dt->value),
+            url_encode(peername));
+        processed++;
+    }
+    
+    /* Free memory and reset */
+    textlist_free(batched_dirty_deletes);
+    batched_dirty_deletes = NULL;
+    batched_deletes_count = 0;
+}
+```
+
+#### Configuration Parser Integration
+
+Added new tokens in `cfgfile_scanner.l`:
+
+```lex
+batch[-_]delete[-_]limit     { return TK_BATCH_DELETE_LIMIT; }
+skip[-_]batch[-_]limit       { return TK_SKIP_BATCH_LIMIT; }
+```
+
+Parser rules in `cfgfile_parser.y`:
+
+```yacc
+batch_delete_limit_stmt:
+    TK_BATCH_DELETE_LIMIT TK_NUMBER ';'
+    { 
+        int limit = $2;
+        if (limit < 0) {
+            csync_fatal("batch_delete_limit cannot be negative: %d\n", limit);
+        }
+        csync_batch_delete_limit = limit;
+        csync_debug(1, "Config: batch_delete_limit set to %d%s\n", 
+                    limit, limit == 0 ? " (UNLIMITED)" : "");
+    }
+    ;
+```
+
+### Key Design Decisions
+
+1. **O(1) Counter**: Used `batched_deletes_count` instead of traversing the linked list for performance
+2. **Per-Peer Flushing**: Ensures correct peername is used for each deletion to prevent cross-peer contamination
+3. **Process Isolation**: Each `-P` process maintains its own batch, preventing race conditions
+4. **Graceful Fallback**: `skip_batch_limit` allows reverting to original behavior without code changes
+
+### Memory Usage Analysis
+
+| Batch Size | Memory Usage | Use Case |
+|------------|--------------|----------|
+| 5,000 | ~650 KB | Low-memory VPS |
+| 20,000 | ~2.6 MB | Standard servers (default) |
+| 50,000 | ~6.5 MB | High-memory servers |
+| 100,000 | ~13 MB | Very high-memory servers |
+| Unlimited | Variable | Not recommended (risk of OOM) |
+
+### Security Considerations
+
+1. **Vulnerability Mitigation**: Prevents memory exhaustion attacks through controlled batch sizes
+2. **Resource Protection**: Ensures predictable memory usage during large sync operations
+3. **Debug Visibility**: Three levels of logging for security auditing and troubleshooting
+
 ## Conclusion
 
 This detailed technical analysis provides a comprehensive overview of the significant changes and enhancements in csync2 2.1.1. The updates touch on various aspects of the system, from low-level file operations to high-level synchronization strategies and database interactions.
 
 Key areas for developers to focus on include:
+
 1. Understanding the implications of atomic file operations across different file systems.
 2. Optimizing the inotify integration for large-scale deployments.
 3. Ensuring database compatibility and performance with the new dynamic loading system.
 4. Handling increased timestamp precision across all synchronization logic.
 5. Implementing and testing the new parallel update capabilities.
-

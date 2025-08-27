@@ -437,6 +437,7 @@ static void disable_cygwin_lowercase_hack()
 %token TK_BAK_DIR TK_BAK_GEN TK_DOLOCALONLY
 %token TK_TEMPDIR
 %token TK_LOCK_TIMEOUT
+%token TK_BATCH_DELETE_LIMIT TK_SKIP_BATCH_LIMIT
 %token <txt> TK_STRING
 
 %%
@@ -463,6 +464,26 @@ block:
 		{ disable_cygwin_lowercase_hack(); }
 |	TK_LOCK_TIMEOUT TK_STRING TK_STEND
 		{ set_lock_timeout($2); }
+|	TK_BATCH_DELETE_LIMIT TK_STRING TK_STEND
+		{ 
+			int limit = atoi($2);
+			if (limit < 0) {
+				csync_fatal("batch_delete_limit cannot be negative: %d\n", limit);
+			}
+			if (limit > 1000000) {
+				csync_debug(0, "WARNING: batch_delete_limit %d very high, using anyway\n", limit);
+			}
+			csync_batch_delete_limit = limit;
+			csync_debug(1, "Config: batch_delete_limit set to %d%s\n", 
+			            limit, limit == 0 ? " (UNLIMITED - CAUTION)" : "");
+			free($2);
+		}
+|	TK_SKIP_BATCH_LIMIT TK_STEND
+		{
+			csync_skip_batch_limit = 1;
+			csync_debug(0, "WARNING: skip_batch_limit enabled - memory exhaustion risk!\n");
+			csync_debug(1, "Config: Batch limit checking DISABLED (fallback mode)\n");
+		}
 ;
 
 ignore_list:

@@ -35,6 +35,93 @@ static int connection_closed_error = 1;
 
 // Batch of filenames to be deleted from dirty table - used when csync_batch_deletes on
 static struct textlist *batched_dirty_deletes;
+static int batched_deletes_count = 0;  /* Counter for O(1) limit checking */
+
+/* Flush accumulated batch deletions to database
+ * 
+ * @param peername - the peer to delete dirty entries for
+ * 
+ * This function executes all accumulated DELETE operations and frees memory.
+ * Called when batch limit reached OR at end of peer sync.
+ * CRITICAL: Must use correct peername for each deletion.
+ */
+static void flush_batched_deletes(const char *peername)
+{
+	struct textlist *dt;
+	int processed = 0;
+	
+	if (!batched_dirty_deletes || batched_deletes_count == 0 || !peername) {
+		csync_debug(3, "flush_batched_deletes: nothing to flush\n");
+		return;
+	}
+	
+	/* Level 1: Important batch operations */
+	csync_debug(1, "Flushing batch: %d deletions for peer '%s'%s\n", 
+	            batched_deletes_count, peername,
+	            csync_skip_batch_limit ? " (limit bypassed)" : "");
+	
+	/* Execute all deletions for THIS peer */
+	for (dt = batched_dirty_deletes; dt != 0; dt = dt->next) {
+		SQL("Batch delete",
+		    "DELETE FROM dirty WHERE filename = '%s' "
+		    "AND peername = '%s'", url_encode(dt->value),
+		    url_encode(peername));
+		processed++;
+		
+		/* Level 3: Individual operations */
+		csync_debug(3, "  Deleted from dirty: %s\n", dt->value);
+	}
+	
+	/* Verify count consistency */
+	if (processed != batched_deletes_count) {
+		csync_debug(0, "WARNING: Batch count mismatch: expected %d, processed %d\n",
+		            batched_deletes_count, processed);
+	}
+	
+	/* Free memory and reset */
+	textlist_free(batched_dirty_deletes);
+	batched_dirty_deletes = NULL;
+	batched_deletes_count = 0;
+	
+	csync_debug(2, "Batch flush completed: %d entries freed\n", processed);
+}
+
+/* Check if batch limit reached and flush needed */
+static int should_flush_batch(const char *peername)
+{
+	/* Fallback mode - skip all limit checking (original behavior) */
+	if (csync_skip_batch_limit) {
+		csync_debug(3, "Batch limit check skipped (fallback mode)\n");
+		return 0;  /* Never flush mid-sync */
+	}
+	
+	/* Unlimited mode (0 = no limit) */
+	if (csync_batch_delete_limit == 0) {
+		csync_debug(3, "Batch unlimited (limit=0)\n");
+		return 0;
+	}
+	
+	/* Check against configured limit */
+	if (batched_deletes_count >= csync_batch_delete_limit) {
+		csync_debug(1, "Batch limit reached: %d >= %d, forcing flush\n",
+		            batched_deletes_count, csync_batch_delete_limit);
+		return 1;
+	}
+	
+	return 0;
+}
+
+/* Cleanup function for error paths and signal handlers */
+void cleanup_batched_deletes(void)
+{
+	if (batched_dirty_deletes) {
+		csync_debug(1, "WARNING: Cleaning up %d unflushed batch deletes\n", 
+		            batched_deletes_count);
+		textlist_free(batched_dirty_deletes);
+		batched_dirty_deletes = NULL;
+		batched_deletes_count = 0;
+	}
+}
 
 enum connection_response read_conn_status(const char *file, const char *host)
 {
@@ -240,7 +327,26 @@ already_gone:
 
 skip_action:
 	if (csync_batch_deletes) {
+		/* Check and flush if limit reached */
+		if (should_flush_batch(peername)) {
+			flush_batched_deletes(peername);
+		}
+		
+		/* Add to batch and increment counter */
 		textlist_add(&batched_dirty_deletes, filename, 0);
+		batched_deletes_count++;
+		
+		/* Debug logging */
+		csync_debug(3, "Batched delete: %s (count: %d/%d%s)\n", 
+		            filename, batched_deletes_count, 
+		            csync_batch_delete_limit ? csync_batch_delete_limit : -1,
+		            csync_skip_batch_limit ? ", limit skipped" : "");
+		
+		/* Warning for large unlimited batches */
+		if (batched_deletes_count > 100000 && csync_batch_delete_limit == 0) {
+			csync_debug(0, "WARNING: Batch size %d very large, consider setting batch_delete_limit\n",
+			            batched_deletes_count);
+		}
 	} else {
 		SQL("Remove dirty-file entry.",
 			"DELETE FROM dirty WHERE filename = '%s' "
@@ -506,7 +612,20 @@ skip_action:
 	}
 
 	if (csync_batch_deletes) {
+		/* Check and flush if limit reached */
+		if (should_flush_batch(peername)) {
+			flush_batched_deletes(peername);
+		}
+		
+		/* Add to batch and increment counter */
 		textlist_add(&batched_dirty_deletes, filename, 0);
+		batched_deletes_count++;
+		
+		/* Debug logging */
+		csync_debug(3, "Batched mod-delete: %s (count: %d/%d%s)\n",
+		            filename, batched_deletes_count,
+		            csync_batch_delete_limit ? csync_batch_delete_limit : -1,
+		            csync_skip_batch_limit ? ", limit skipped" : "");
 	} else {
 		SQL("Remove dirty-file entry.",
 			"DELETE FROM dirty WHERE filename = '%s' "
@@ -881,20 +1000,26 @@ void csync_update(const char ** patlist, int patnum, int recursive, int dry_run)
 found_asactive:
 		csync_update_host(t->value, patlist, patnum, recursive, dry_run);
 
+		/* Process accumulated batch for this peer */
 		if (csync_batch_deletes) {
 			if (!dry_run) {
-				csync_debug(2, "Starting batched dirty deletes for %s\n", t->value);
-				for (dt = batched_dirty_deletes; dt != 0; dt = dt->next) {
-					SQL("Remove dirty-file entry from batch",
-						"DELETE FROM dirty WHERE filename = '%s' "
-						"AND peername = '%s'", url_encode(dt->value),
-						url_encode(t->value));
+				if (batched_deletes_count > 0) {
+					csync_debug(1, "End-of-peer flush: %d pending deletions for '%s'\n",
+					            batched_deletes_count, t->value);
+					flush_batched_deletes(t->value);  /* Use correct peername */
+				} else {
+					csync_debug(2, "No pending deletions for peer '%s'\n", t->value);
 				}
-				csync_debug(2, "Finished batched dirty deletes for %s\n", t->value);
+			} else {
+				/* Dry-run mode: cleanup without executing */
+				if (batched_deletes_count > 0) {
+					csync_debug(1, "Dry-run: would flush %d deletions for '%s'\n",
+					            batched_deletes_count, t->value);
+					cleanup_batched_deletes();
+				}
 			}
-			textlist_free(batched_dirty_deletes);
-			batched_dirty_deletes = NULL;
 		}
+		/* List is now empty for next peer */
 	}
 
 	textlist_free(tl);

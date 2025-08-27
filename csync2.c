@@ -69,6 +69,12 @@ FILE *csync_debug_out = 0;
 int csync_syslog = 0;
 int csync_atomic_patch = 1; //TODO - make an inverse flag.
 int csync_batch_deletes = 0;
+/* Batch delete limit configuration (v2.1.1+) 
+ * Prevents memory exhaustion during large sync operations
+ * Default 20000 = ~2.6MB memory usage
+ */
+int csync_batch_delete_limit = 20000; /* Max batch size, 0=unlimited */
+int csync_skip_batch_limit = 0;       /* Skip limit check for troubleshooting */
 
 int csync_server_child_pid = 0;
 int csync_timestamps = 0;

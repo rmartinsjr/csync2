@@ -438,6 +438,8 @@ extern int csync_timestamps;
 extern int csync_new_force;
 extern int csync_atomic_patch;
 extern int csync_batch_deletes;
+extern int csync_batch_delete_limit;  /* Batch size limit (v2.1.1+) */
+extern int csync_skip_batch_limit;    /* Skip limit for troubleshooting */
 
 extern char myhostname[];
 extern int bind_to_myhostname;

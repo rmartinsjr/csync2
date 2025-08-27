@@ -68,6 +68,8 @@ int include_stack_ptr = 0;
 
 "lock-timeout"		{ return TK_LOCK_TIMEOUT; }
 "tempdir"		{ return TK_TEMPDIR; }
+batch[-_]delete[-_]limit	{ return TK_BATCH_DELETE_LIMIT; }
+skip[-_]batch[-_]limit	{ return TK_SKIP_BATCH_LIMIT; }
 "backup-directory"	{ return TK_BAK_DIR; }
 "backup-generations"	{ return TK_BAK_GEN; }
 
