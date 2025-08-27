@@ -165,6 +165,9 @@ then
     test -n "$LIBMYSQLCLIENT_SO" || AC_MSG_ERROR([Could not determine library name to be used in dlopen for $DB_TYPE support])
 fi
 AC_DEFINE_UNQUOTED([LIBMYSQLCLIENT_SO], ["$LIBMYSQLCLIENT_SO"], [library name to be used in dlopen for MySQL/MariaDB support])
+AS_IF([test "$DB_TYPE" = "MariaDB"], [
+    AC_DEFINE_UNQUOTED([LIBMARIADBCLIENT_SO], ["$LIBMYSQLCLIENT_SO"], [library name to be used in dlopen for MariaDB support])
+])
 
 if test "$enable_postgres" == yes
 then
