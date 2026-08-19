@@ -1,0 +1,129 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "master-2.1" ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ "master-2.1" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write     # Needed to create releases and upload assets
+
+jobs:
+  build-rpm:
+    name: Build RPM (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            container: rockylinux:9
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            container: rockylinux:9
+
+    container:
+      image: ${{ matrix.container }}
+      options: --privileged   # Sometimes needed for mock / certain builds
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          dnf -y groupinstall "Development Tools"; \
+          dnf -y install \
+            rpm-build \
+            rpmdevtools \
+            dnf-plugins-core \
+            git \
+            make \
+            gcc \
+            gcc-c++ \
+            tar \
+            gzip \
+            which; \
+          dnf -y install \
+            librsync-devel \
+            sqlite \
+            sqlite-libs \
+            librsync \
+            gnutls-devel \
+            libpq-devel
+
+      - name: Set up RPM build tree
+        run: |
+          rpmdev-setuptree
+          # Copy your .spec file
+          cp packaging/*.spec $HOME/rpmbuild/SPECS/ 2>/dev/null || \
+          cp *.spec $HOME/rpmbuild/SPECS/ || true
+
+      - name: Prepare sources
+        run: |
+          # Example: create a source tarball from the repo
+          # Adjust VERSION / tarball name to match your .spec
+          VERSION=${GITHUB_REF_NAME#v}
+          tar --exclude='.git' -czf $HOME/rpmbuild/SOURCES/${{ github.event.repository.name }}-${VERSION}.tar.gz .
+          
+          # Or copy pre-existing sources:
+          # cp packaging/SOURCES/* $HOME/rpmbuild/SOURCES/ || true
+
+      - name: Build RPM
+        run: |
+          cd $HOME/rpmbuild
+          # Replace "your-package.spec" with the real name of your spec file
+          rpmbuild -ba SPECS/*.spec \
+            --define "_topdir $HOME/rpmbuild" \
+            --define "dist .el9" \
+            --target ${{ matrix.arch }}
+
+      - name: Collect RPMs
+        run: |
+          mkdir -p dist
+          find $HOME/rpmbuild/RPMS -name "*.rpm" -exec cp {} dist/ \;
+          find $HOME/rpmbuild/SRPMS -name "*.rpm" -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.arch }}
+          path: dist/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to GitHub Release
+    needs: build-rpm
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all RPM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: rpm-*
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f -name "*.rpm" | sort
+
+      - name: Create / Update GitHub Release and upload RPMs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.rpm
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
