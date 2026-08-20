@@ -49,6 +49,7 @@ jobs:
             tar \
             gzip \
             which; \
+          dnf install -y epel-release; \
           dnf -y install \
             librsync-devel \
             sqlite \
