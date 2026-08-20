@@ -70,6 +70,8 @@ jobs:
           # Adjust VERSION / tarball name to match your .spec
           #VERSION=${GITHUB_REF_NAME#v}
           VERSION="2.1.1"
+          pwd
+          ls -laR
           tar --exclude='.git' -czf $HOME/rpmbuild/SOURCES/${{ github.event.repository.name }}-${VERSION}.tar.gz .
           
           # Or copy pre-existing sources:
