@@ -52,10 +52,9 @@ jobs:
           dnf install -y epel-release; \
           dnf -y install \
             librsync-devel \
-            sqlite \
-            sqlite-libs \
-            librsync \
+            sqlite-devel \
             gnutls-devel \
+            mysql-devel \
             libpq-devel
 
       - name: Set up RPM build tree
