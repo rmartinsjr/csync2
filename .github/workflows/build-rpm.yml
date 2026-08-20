@@ -54,7 +54,7 @@ jobs:
             librsync-devel \
             sqlite-devel \
             gnutls-devel \
-            mariadb-devel \
+            mariadb-connector-c-devel \
             libpq-devel
 
       - name: Set up RPM build tree
